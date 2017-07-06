@@ -459,9 +459,9 @@ namespace Microsoft.AspNetCore.Authentication.OpenIdConnect
                 return HandleRequestResult.Fail("No message.");
             }
 
+            AuthenticationProperties properties = null;
             try
             {
-                AuthenticationProperties properties = null;
                 if (!string.IsNullOrEmpty(authorizationResponse.State))
                 {
                     properties = Options.StateDataFormat.Unprotect(authorizationResponse.State);
@@ -474,6 +474,12 @@ namespace Microsoft.AspNetCore.Authentication.OpenIdConnect
                 }
                 authorizationResponse = messageReceivedContext.ProtocolMessage;
                 properties = messageReceivedContext.Properties;
+
+                // if any of the error fields are set, throw error null
+                if (!string.IsNullOrEmpty(authorizationResponse.Error))
+                {
+                    return HandleRequestResult.Fail(CreateOpenIdConnectProtocolException(authorizationResponse, response: null), properties);
+                }
 
                 if (properties == null)
                 {
@@ -504,18 +510,9 @@ namespace Microsoft.AspNetCore.Authentication.OpenIdConnect
                     return HandleRequestResult.Fail(Resources.MessageStateIsInvalid);
                 }
 
-                properties.Items.TryGetValue(OpenIdConnectDefaults.UserstatePropertiesKey, out string userstate);
-                authorizationResponse.State = userstate;
-
                 if (!ValidateCorrelationId(properties))
                 {
-                    return HandleRequestResult.Fail("Correlation failed.");
-                }
-
-                // if any of the error fields are set, throw error null
-                if (!string.IsNullOrEmpty(authorizationResponse.Error))
-                {
-                    return HandleRequestResult.Fail(CreateOpenIdConnectProtocolException(authorizationResponse, response: null));
+                    return HandleRequestResult.Fail("Correlation failed.", properties);
                 }
 
                 if (_configuration == null && Options.ConfigurationManager != null)
@@ -523,6 +520,9 @@ namespace Microsoft.AspNetCore.Authentication.OpenIdConnect
                     Logger.UpdatingConfiguration();
                     _configuration = await Options.ConfigurationManager.GetConfigurationAsync(Context.RequestAborted);
                 }
+
+                properties.Items.TryGetValue(OpenIdConnectDefaults.UserstatePropertiesKey, out string userstate);
+                authorizationResponse.State = userstate;
 
                 PopulateSessionProperties(authorizationResponse, properties);
 
@@ -690,7 +690,7 @@ namespace Microsoft.AspNetCore.Authentication.OpenIdConnect
                     return authenticationFailedContext.Result;
                 }
 
-                return HandleRequestResult.Fail(exception);
+                return HandleRequestResult.Fail(exception, properties);
             }
         }
 

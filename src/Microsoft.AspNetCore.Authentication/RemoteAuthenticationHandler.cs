@@ -48,13 +48,13 @@ namespace Microsoft.AspNetCore.Authentication
             }
 
             AuthenticationTicket ticket = null;
-            Exception exception = null;
+            AuthenticationError error = null;
             try
             {
                 var authResult = await HandleRemoteAuthenticateAsync();
                 if (authResult == null)
                 {
-                    exception = new InvalidOperationException("Invalid return state, unable to redirect.");
+                    error = new AuthenticationError(new InvalidOperationException("Invalid return state, unable to redirect."));
                 }
                 else if (authResult.Handled)
                 {
@@ -66,21 +66,24 @@ namespace Microsoft.AspNetCore.Authentication
                 }
                 else if (!authResult.Succeeded)
                 {
-                    exception = authResult.Failure ??
-                                new InvalidOperationException("Invalid return state, unable to redirect.");
+                    error = authResult.Error
+                        ?? new AuthenticationError(new InvalidOperationException("Invalid return state, unable to redirect."));
                 }
 
                 ticket = authResult.Ticket;
             }
             catch (Exception ex)
             {
-                exception = ex;
+                error = new AuthenticationError(ex);
             }
 
-            if (exception != null)
+            if (error != null)
             {
-                Logger.RemoteAuthenticationError(exception.Message);
-                var errorContext = new RemoteFailureContext(Context, Scheme, Options, exception);
+                Logger.RemoteAuthenticationError(error.Failure.Message);
+                var errorContext = new RemoteFailureContext(Context, Scheme, Options)
+                {
+                    Error = error,
+                };
                 await Events.RemoteFailure(errorContext);
 
                 if (errorContext.Result != null)
@@ -95,7 +98,7 @@ namespace Microsoft.AspNetCore.Authentication
                     }
                 }
 
-                throw exception;
+                throw errorContext.Error?.Failure;
             }
 
             // We have a ticket if we get here

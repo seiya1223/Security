@@ -14,16 +14,24 @@ namespace Microsoft.AspNetCore.Authentication
         public RemoteFailureContext(
             HttpContext context,
             AuthenticationScheme scheme,
-            RemoteAuthenticationOptions options,
-            Exception failure)
+            RemoteAuthenticationOptions options)
             : base(context, scheme, options)
         {
-            Failure = failure;
         }
 
         /// <summary>
         /// User friendly error message for the error.
         /// </summary>
-        public Exception Failure { get; set; }
+        public Exception Failure => Error?.Failure;
+
+        /// <summary>
+        /// Additional state values for the authentication session.
+        /// </summary>
+        public AuthenticationProperties Properties => Error?.Properties;
+
+        /// <summary>
+        /// Holds error information from the authentication.
+        /// </summary>
+        public AuthenticationError Error { get; set; }
     }
 }
