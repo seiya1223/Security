@@ -9,6 +9,7 @@ using System.Text.Encodings.Web;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.Facebook;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Authentication.MicrosoftAccount;
 using Microsoft.AspNetCore.Authentication.OAuth;
@@ -16,6 +17,7 @@ using Microsoft.AspNetCore.Authentication.Twitter;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Linq;
@@ -52,12 +54,7 @@ namespace SocialSample
                 throw new InvalidOperationException("User secrets must be configured for each authentication provider.");
             }
 
-            services.AddAuthentication(options =>
-            {
-                options.DefaultAuthenticateScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-                options.DefaultSignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-                options.DefaultChallengeScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-            })
+            services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
                 .AddCookie(o => o.LoginPath = new PathString("/login"))
                 // You must first create an app with Facebook and add its ID and Secret to your user-secrets.
                 // https://developers.facebook.com/apps/
@@ -225,7 +222,6 @@ namespace SocialSample
                     var schemeProvider = context.RequestServices.GetRequiredService<IAuthenticationSchemeProvider>();
                     foreach (var provider in await schemeProvider.GetAllSchemesAsync())
                     {
-                        // REVIEW: we lost access to display name (which is buried in the handler options)
                         await response.WriteAsync("<a href=\"?authscheme=" + provider.Name + "\">" + (provider.DisplayName ?? "(suppressed)") + "</a><br>");
                     }
                     await response.WriteAsync("</body></html>");
@@ -263,19 +259,20 @@ namespace SocialSample
                         return;
                     }
 
-                    var refreshToken = authProperties.GetTokenValue("refresh_token");
-
-                    if (string.IsNullOrEmpty(refreshToken))
-                    {
-                        response.ContentType = "text/html";
-                        await response.WriteAsync("<html><body>");
-                        await response.WriteAsync("No refresh_token is available.<br>");
-                        await response.WriteAsync("<a href=\"/\">Home</a>");
-                        await response.WriteAsync("</body></html>");
-                    }
-
                     if (string.Equals(GoogleDefaults.AuthenticationScheme, user.Identities.First().AuthenticationType))
                     {
+                        var refreshToken = authProperties.GetTokenValue("refresh_token");
+
+                        if (string.IsNullOrEmpty(refreshToken))
+                        {
+                            response.ContentType = "text/html";
+                            await response.WriteAsync("<html><body>");
+                            await response.WriteAsync("No refresh_token is available.<br>");
+                            await response.WriteAsync("<a href=\"/\">Home</a>");
+                            await response.WriteAsync("</body></html>");
+                            return;
+                        }
+
                         var handler = (AuthenticationHandler<GoogleOptions>)await authSchemes.GetHandlerAsync(context, GoogleDefaults.AuthenticationScheme);
 
                         var pairs = new Dictionary<string, string>()
@@ -292,6 +289,50 @@ namespace SocialSample
                         var payload = JObject.Parse(await refreshResponse.Content.ReadAsStringAsync());
 
                         // Persist the new acess token
+                        authProperties.UpdateTokenValue("access_token", payload.Value<string>("access_token"));
+                        if (int.TryParse(payload.Value<string>("expires_in"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds))
+                        {
+                            var expiresAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(seconds);
+                            authProperties.UpdateTokenValue("expires_at", expiresAt.ToString("o", CultureInfo.InvariantCulture));
+                        }
+                        await context.SignInAsync(user, authProperties);
+
+                        response.ContentType = "text/html";
+                        await response.WriteAsync("<html><body>");
+                        await response.WriteAsync("Refreshed.<br>");
+                        await response.WriteAsync(HtmlEncoder.Default.Encode(payload.ToString()).Replace(",", ",<br>") + "<br>");
+
+                        await response.WriteAsync("<br>Tokens:<br>");
+
+                        await response.WriteAsync("Access Token: " + authProperties.GetTokenValue("access_token") + "<br>");
+                        await response.WriteAsync("Refresh Token: " + authProperties.GetTokenValue("refresh_token") + "<br>");
+                        await response.WriteAsync("Token Type: " + authProperties.GetTokenValue("token_type") + "<br>");
+                        await response.WriteAsync("expires_at: " + authProperties.GetTokenValue("expires_at") + "<br>");
+
+                        await response.WriteAsync("<a href=\"/\">Home</a><br>");
+                        await response.WriteAsync("<a href=\"/refresh_token\">Refresh Token</a><br>");
+                        await response.WriteAsync("</body></html>");
+
+                        return;
+                    }
+                    // https://developers.facebook.com/docs/facebook-login/access-tokens/expiration-and-extension
+                    else if (string.Equals(FacebookDefaults.AuthenticationScheme, user.Identities.First().AuthenticationType))
+                    {
+                        var handler = (AuthenticationHandler<FacebookOptions>)await authSchemes.GetHandlerAsync(context, FacebookDefaults.AuthenticationScheme);
+
+                        var accessToken = authProperties.GetTokenValue("access_token");
+
+                        var query = new QueryBuilder()
+                        {
+                            { "grant_type", "fb_exchange_token" },
+                            { "client_id", handler.Options.AppId },
+                            { "client_secret", handler.Options.AppSecret },
+                            { "fb_exchange_token", accessToken },
+                        }.ToQueryString();
+
+                        var refreshResponse = await handler.Options.Backchannel.GetStringAsync(handler.Options.TokenEndpoint + query);
+                        var payload = JObject.Parse(refreshResponse);
+
                         authProperties.UpdateTokenValue("access_token", payload.Value<string>("access_token"));
                         if (int.TryParse(payload.Value<string>("expires_in"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds))
                         {
